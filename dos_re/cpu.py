@@ -34,7 +34,7 @@ _ALU_NAMES = ("add", "or", "adc", "sbb", "and", "sub", "xor", "cmp")
 #: same reason the flag bits and control exceptions moved there.  Re-exported
 #: so every existing `from .cpu import CPUState` importer is unaffected.
 from .x86 import (CF, PF, AF, ZF, SF, TF, IF, DF, OF, PARITY as _PARITY,  # noqa: F401
-                  UnsupportedInstruction, HaltExecution, CPUState)
+                  UnsupportedInstruction, HaltExecution, HookParkError, CPUState)
 
 
 class EffectiveAddress:
@@ -202,6 +202,20 @@ class CPU8086:
     # Optional generic execution telemetry sink. The CPU emits only raw events;
     # game-specific identity classification lives outside the interpreter.
     coverage_telemetry: Any | None = None
+    # Waiting across a replay/frame boundary (docs/hooks_and_verification.md,
+    # "Waiting across a boundary").  The frame driver publishes the guest
+    # instruction count at which the current frame/point ends; a selected
+    # CPU-backed implementation that waits for an event delivered only at that
+    # boundary may stop there, parked at one of its DECLARED resume points
+    # with the exact machine state of the original.  ``hook_owner`` maps every
+    # hook address to the implementation that installed it and
+    # ``hook_resume_owner`` maps declared resume points to their owner; both
+    # are filled by ``execution.bind_plan_implementations``.  ``parked`` is
+    # set by a step whose hook parked; the frame driver clears it.
+    instruction_deadline: int | None = None
+    hook_owner: dict[tuple[int, int], str] = field(default_factory=dict)
+    hook_resume_owner: dict[tuple[int, int], str] = field(default_factory=dict)
+    parked: bool = False
 
     def addr(self) -> tuple[int, int]:
         return self.s.cs & 0xFFFF, self.s.ip & 0xFFFF
@@ -571,6 +585,8 @@ class CPU8086:
             # observable (PIT reads first among them).
             if not getattr(handler, "owns_time", False):
                 self.instruction_count += 1
+            if self.hook_resume_owner:
+                self._check_hook_park(hook_key)
             if self.trace_enabled:
                 self.trace.append(f"{start_cs:04X}:{start_ip:04X}  HOOK {name:<23} {before} -> {self.s.snapshot()}")
             return
@@ -644,6 +660,34 @@ class CPU8086:
             self.step()
             steps += 1
         return steps
+
+    def _check_hook_park(self, hook_key: tuple[int, int]) -> None:
+        """Validate a hook that stopped at a declared resume point.
+
+        A hook may leave CS:IP at a resume point only when it is the resume
+        point's owner and it stopped at ``instruction_deadline`` -- exactly at
+        it, or at its first possible stop when the deadline was already
+        behind on entry (live frames only: a replay driver rejects any count
+        past its point).  Anything else would hand the interpreter an
+        internal instruction of a replaced function (an undeclared fallback)
+        or stop before the boundary the oracle stops at.
+        """
+        where = (self.s.cs & 0xFFFF, self.s.ip & 0xFFFF)
+        owner = self.hook_resume_owner.get(where)
+        if owner is None:
+            return
+        caller = self.hook_owner.get(hook_key)
+        if caller != owner:
+            raise HookParkError(
+                f"hook at {hook_key[0]:04X}:{hook_key[1]:04X} ({caller!r}) stopped at "
+                f"resume point {where[0]:04X}:{where[1]:04X} owned by {owner!r}")
+        deadline = self.instruction_deadline
+        if deadline is None or self.instruction_count < deadline:
+            raise HookParkError(
+                f"{owner!r} parked at {where[0]:04X}:{where[1]:04X} with instruction count "
+                f"{self.instruction_count}, deadline {deadline}; a hook may park only "
+                "at the published deadline")
+        self.parked = True
 
     # ---- x87 floating point (ESC opcodes D8-DF) --------------------------
     # Grown for Win16 inline-8087 code.  Registers are Python doubles: the

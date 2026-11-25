@@ -86,7 +86,10 @@ replay. Host dispatch count is never a coordinate: `CPU.run(N)` performs `N`
 calls to `step()`, while one generated-function dispatch may account many guest
 instructions. A low-level fallback must still be reached exactly; overshooting
 fails loudly and identifies a long atomic implementation that needs an explicit
-yield if an interrupt or device effect can occur inside it. The coordinate hash
+yield if an interrupt or device effect can occur inside it (for a CPU-backed
+implementation that waits for a boundary-delivered interrupt: an instruction
+deadline plus declared resume points, see
+[`hooks_and_verification.md`](hooks_and_verification.md#waiting-across-a-boundary)). The coordinate hash
 is part of the artifact identity.
 
 `ReplayEvent` stores a point, stable sequence number, channel, and canonical

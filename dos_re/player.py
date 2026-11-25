@@ -272,6 +272,32 @@ def _accumulate_fixed_step_time(
     return min(period * 2.0, accumulator + max(0.0, elapsed))
 
 
+def run_frame_steps(cpu, steps: int) -> int:
+    """Run one live frame of ``steps`` dispatches.
+
+    Publishes ``cpu.instruction_deadline`` = current count + ``steps`` (the
+    frame's guest-instruction budget) for implementations that wait across
+    a boundary, and ends the frame early when one parks at it.  Without a
+    parking implementation this is exactly ``cpu.run(steps)``, which is what
+    runs when no resume point is bound (other carriers keep their own run).
+    """
+    if not getattr(cpu, "hook_resume_owner", None):
+        return cpu.run(steps)
+    cpu.instruction_deadline = cpu.instruction_count + steps
+    cpu.parked = False
+    done = 0
+    try:
+        while done < steps and not cpu.halted:
+            cpu.step()
+            done += 1
+            if cpu.parked:
+                break
+    finally:
+        cpu.instruction_deadline = None
+        cpu.parked = False
+    return done
+
+
 class GameFrontend:
     """Per-game adapter for the canonical player. Subclass and override.
 
@@ -546,7 +572,7 @@ class GameFrontend:
 
         for _ in range(max(0, args.timer_irqs_per_frame)):
             deliver_interrupt(rt, 0x08)
-        rt.cpu.run(args.steps_per_frame)
+        run_frame_steps(rt.cpu, args.steps_per_frame)
 
     def replay_point_coordinate(
         self,
@@ -591,13 +617,20 @@ class GameFrontend:
             raise ReplayError(
                 f"replay point {coordinate.point.ordinal} is behind the runtime: "
                 f"{target} < {rt.cpu.instruction_count}")
-        while rt.cpu.instruction_count < target:
-            rt.cpu.step()
-            if rt.cpu.instruction_count > target:
-                raise ReplayError(
-                    f"implementation crossed replay point "
-                    f"{coordinate.point.ordinal}: {rt.cpu.instruction_count} > {target}; "
-                    "the selected implementation needs a resumable boundary")
+        cpu = rt.cpu
+        cpu.instruction_deadline = target
+        try:
+            while cpu.instruction_count < target:
+                cpu.step()
+                if cpu.instruction_count > target:
+                    raise ReplayError(
+                        f"implementation crossed replay point "
+                        f"{coordinate.point.ordinal}: {cpu.instruction_count} > {target}; "
+                        "the selected implementation needs a resumable boundary "
+                        "(declared resume points + instruction deadline)")
+        finally:
+            cpu.instruction_deadline = None
+            cpu.parked = False
 
     def decode_frame(self, rt):
         """Return the current screen as an HxWx3 uint8 array."""

@@ -143,6 +143,47 @@ closed implementation/dependency graph and pass the finite verification suite
 declared by its policy. Closed-world packaging does not pretend that the suite
 enumerates every possible program input.
 
+## Waiting across a boundary
+
+Some original routines wait inside the call for an event that the frame
+driver delivers only at a replay/frame boundary -- typically a poll loop on a
+counter incremented by the game's INT 08h handler. An atomic hook cannot
+reproduce such a call: it runs to its return, crosses the replay point, and
+`advance_replay_frame` fails loudly. Falling back to the interpreted loop is
+not allowed either.
+
+Two declarations make the wait expressible without a Python continuation:
+
+1. **Instruction deadline.** The frame driver publishes
+   `cpu.instruction_deadline` while it steps toward a point:
+   `advance_replay_frame` uses the point's guest-instruction target, the
+   default live `advance_frame` (`player.run_frame_steps`) uses the frame
+   start count plus `steps_per_frame` and ends the frame early when a hook
+   parks. Hooks that ignore it behave exactly as before.
+2. **Resume points.** `ImplementationDescriptor.resume_points` names internal
+   `ExecutionPointIdentity` points of a target function at which the
+   implementation may stop and be re-entered. Planning rejects resume points
+   outside the image/address space of the implementation's function targets,
+   points that are another selected implementation's entry or resume point,
+   and points that are the implementation's own entry. Binding requires the
+   same adapter activation to install a hook at every resume point and records
+   `cpu.hook_owner` / `cpu.hook_resume_owner`.
+
+A hook entered at its entry or at one of its resume points either completes
+its declared continuation, or stops at the deadline with CS:IP on one of its
+own resume points and the complete machine state the original has at that
+instruction count. The CPU validates every stop at a resume point
+(`HookParkError`: not the owner, no deadline, before the deadline); a replay
+driver additionally rejects any count past its point. The interrupt is then
+delivered exactly as for the original and returns to the resume point, where
+the hook continues.
+
+The parked state is entirely guest-visible, so boundary caches, snapshots and
+restore are unchanged: restoring a boundary inside the wait and stepping
+re-enters the resume-point hook. `--profile verification` compares the parked
+state like any other boundary state. Per-call checkers compare such a call as
+segments (entry to park, resume to the next park or return).
+
 ## Framework interceptors
 
 Replay clocks, wait parking, profilers, diagnostic probes, device entrypoints,

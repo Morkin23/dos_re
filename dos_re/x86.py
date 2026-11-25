@@ -33,6 +33,11 @@ class HaltExecution(Exception):
     pass
 
 
+class HookParkError(RuntimeError):
+    """A CPU-backed implementation stopped at a resume point it may not use:
+    not its owner, no published deadline, or not exactly at the deadline."""
+
+
 @dataclass(slots=True)
 class CPUState:
     """The REGISTER FILE -- ISA data, not the interpreter.

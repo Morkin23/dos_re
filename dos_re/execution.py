@@ -470,6 +470,52 @@ class ClosureFinding:
     region_id: str = ""
 
 
+def split_address_identity(key: str) -> tuple[str, str, str, str]:
+    """``(image, kind, address_space, address)`` of an AddressIdentity key
+    (the address is returned decoded)."""
+    from urllib.parse import unquote
+
+    image, kind, space, address = key.rsplit(":", 3)
+    return image, kind, unquote(space), unquote(address)
+
+
+def real_mode_point(key: str) -> tuple[int, int]:
+    """``(segment, offset)`` of a real-mode address identity key."""
+    _, _, space, address = split_address_identity(key)
+    segment, sep, offset = address.partition(":")
+    if space != "real-mode" or not sep:
+        raise ValueError(f"{key!r} is not a real-mode segment:offset identity")
+    return int(segment, 16), int(offset, 16)
+
+
+def _validate_resume_points(descriptor: "ImplementationDescriptor") -> None:
+    if descriptor.origin is not ImplementationOrigin.AUTHORED or descriptor.region_id is not None:
+        raise ValueError(
+            f"{descriptor.implementation_id!r}: only authored function "
+            "implementations declare resume points")
+    owners = set()
+    for target in descriptor.targets:
+        try:
+            image, kind, space, _ = split_address_identity(target)
+        except ValueError:
+            continue
+        if kind == "function":
+            owners.add((image, space))
+    for point in descriptor.resume_points:
+        try:
+            image, kind, space, _ = split_address_identity(point)
+        except ValueError:
+            raise ValueError(f"{descriptor.implementation_id!r}: malformed resume point {point!r}") from None
+        if kind != "point":
+            raise ValueError(
+                f"{descriptor.implementation_id!r}: resume point {point!r} must be an "
+                "execution point identity")
+        if (image, space) not in owners:
+            raise ValueError(
+                f"{descriptor.implementation_id!r}: resume point {point!r} is not in "
+                "the image/address space of a function the implementation targets")
+
+
 @dataclass(frozen=True)
 class ImplementationDescriptor:
     implementation_id: str
@@ -489,10 +535,17 @@ class ImplementationDescriptor:
     implementation_digest: str = ""
     region_id: str | None = None
     region_contract: ExecutionRegionContract | None = None
+    #: Internal execution points of a target function at which this
+    #: implementation may stop at a published instruction deadline and be
+    #: re-entered after the boundary (``ExecutionPointIdentity`` keys).  See
+    #: docs/hooks_and_verification.md, "Waiting across a boundary".
+    resume_points: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not self.implementation_id:
             raise ValueError("implementation ID must not be empty")
+        if self.resume_points:
+            _validate_resume_points(self)
         if self.origin is ImplementationOrigin.AUTHORED:
             if self.category is OverrideCategory.BASELINE:
                 raise ValueError(
@@ -730,6 +783,60 @@ class ImplementationCatalog:
         raise KeyError(implementation_id)
 
 
+def _address_key(identity: str) -> tuple[str, str, str]:
+    image, _, space, address = split_address_identity(identity)
+    return image, space, address
+
+
+def _check_resume_point_ownership(selected: tuple[ImplementationDescriptor, ...]) -> None:
+    """A resume point belongs to exactly one selected implementation and is
+    not the entry address of another selected implementation."""
+    entries: dict[tuple[str, str, str], str] = {}
+    for item in selected:
+        for target in item.targets:
+            try:
+                entries[_address_key(target)] = item.implementation_id
+            except ValueError:
+                continue
+    seen: dict[tuple[str, str, str], str] = {}
+    for item in selected:
+        for point in sorted(item.resume_points):
+            key = _address_key(point)
+            other = seen.get(key) or (
+                entries.get(key) if entries.get(key) != item.implementation_id else None)
+            if other is not None:
+                raise ValueError(
+                    f"resume point {point} of {item.implementation_id!r} is also "
+                    f"owned by selected implementation {other!r}")
+            if entries.get(key) == item.implementation_id:
+                raise ValueError(
+                    f"resume point {point} of {item.implementation_id!r} is one of "
+                    "its own entry targets")
+            seen[key] = item.implementation_id
+
+
+def _register_resume_points(runtime, implementation_id: str, descriptor, installed) -> None:
+    """Record hook ownership on a CPU carrier and require a hook at every
+    declared resume point (installed by the same adapter activation)."""
+    cpu = getattr(runtime, "cpu", None)
+    hooks = getattr(cpu, "replacement_hooks", None)
+    if hooks is None or not hasattr(cpu, "hook_owner"):
+        if descriptor.resume_points:
+            raise RuntimeError(
+                f"{implementation_id!r} declares resume points but the runtime "
+                "carrier has no CPU hook table")
+        return
+    for key in installed:
+        cpu.hook_owner[key] = implementation_id
+    for point in sorted(descriptor.resume_points):
+        address = real_mode_point(point)
+        if address not in installed:
+            raise RuntimeError(
+                f"{implementation_id!r} declares resume point {point} but its "
+                "adapter did not install a hook there")
+        cpu.hook_resume_owner[address] = implementation_id
+
+
 def bind_plan_implementations(
     runtime: object,
     plan: "ExecutionPlan",
@@ -814,7 +921,16 @@ def bind_plan_implementations(
             None,
         )
         if adapter is not None:
+            cpu = getattr(runtime, "cpu", None)
+            hooks = getattr(cpu, "replacement_hooks", None)
+            before = dict(hooks) if hooks is not None else None
             adapter.activate(runtime, tuple(sorted(targets)))
+            installed = (
+                {key for key, value in hooks.items() if before.get(key) is not value}
+                if hooks is not None else set()
+            )
+            _register_resume_points(
+                runtime, implementation_id, descriptors[implementation_id], installed)
             continue
 
         descriptor = descriptors[implementation_id]
@@ -1527,6 +1643,7 @@ def _plan_digest(
                 "assets": sorted(item.required_assets),
                 "platforms": sorted(item.supported_platforms),
                 "verification_evidence": sorted(item.verification_evidence),
+                "resume_points": sorted(item.resume_points),
                 "recovery_level": (
                     None if item.recovery_level is None
                     else item.recovery_level.value
@@ -1971,6 +2088,7 @@ def plan_execution(
                 f"multiple selected authored implementations own {target}: "
                 + ", ".join(sorted(owners))
             )
+    _check_resume_point_ownership(selected_authored)
     service_items = service_catalog.services
     service_by_id = {service.service_id: service for service in service_items}
 
