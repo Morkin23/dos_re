@@ -301,6 +301,12 @@ class DOSMachine:
     mouse_x: int = 320
     mouse_y: int = 100
     mouse_buttons: int = 0
+    # Buttons pressed since the program last read the state (AX=3).  A
+    # program that polls AX=3 only every few frames (War in Middle Earth:
+    # every ~6.5 timer ticks) would otherwise miss a click that is pressed
+    # and released between two polls; the latch keeps the press visible for
+    # one read.  Derived from the front-end samples, so replays reproduce it.
+    mouse_press_latch: int = 0
     mouse_range: list[int] = field(default_factory=lambda: [0, 639, 0, 199])
     # Writable-file policy.  Program writes (INT 21h create/write) always land in
     # an in-memory overlay keyed by resolved path and survive close -- so a
@@ -1870,6 +1876,7 @@ class DOSMachine:
         self.mouse_x = r[0] + int(u * (r[1] - r[0]))
         self.mouse_y = r[2] + int(v * (r[3] - r[2]))
         if buttons is not None:
+            self.mouse_press_latch |= buttons & ~self.mouse_buttons
             self.mouse_buttons = buttons
 
     def int33(self, cpu: CPU8086) -> None:
@@ -1893,12 +1900,14 @@ class DOSMachine:
             cpu.s.bx = 2
             self.mouse_range = [0, 639, 0, 199]  # driver reset restores its default box
             self.mouse_x, self.mouse_y, self.mouse_buttons = 320, 100, 0  # ...centre of it
+            self.mouse_press_latch = 0
             return
         if ax in (0x0001, 0x0002):               # show / hide cursor (game draws its own)
             return
         if ax == 0x0003:                         # get position + buttons (range-clamped)
             r = self.mouse_range
-            cpu.s.bx = self.mouse_buttons & 0xFFFF
+            cpu.s.bx = (self.mouse_buttons | self.mouse_press_latch) & 0xFFFF
+            self.mouse_press_latch = 0
             cpu.s.cx = max(r[0], min(r[1], self.mouse_x)) & 0xFFFF
             cpu.s.dx = max(r[2], min(r[3], self.mouse_y)) & 0xFFFF
             return

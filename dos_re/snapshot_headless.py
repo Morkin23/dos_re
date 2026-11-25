@@ -16,7 +16,7 @@ def capture_dos_state(dos, memory) -> dict:
     Keep the key set in lockstep with ``_restore_dos_state``: a field captured
     here but not restored there is silently lost on reload.
     """
-    return {
+    state = {
         "video_mode": dos.video_mode,
         "video_page": dos.video_page,
         "text_mode_active": dos.text_mode_active,
@@ -115,6 +115,12 @@ def capture_dos_state(dos, memory) -> dict:
         "port_log_length": len(dos.port_log),
         "port_log_tail": dos.port_log[-128:],
     }
+    # INT 33h press latch: persisted only while set, so the state (and every
+    # digest over it) of runtimes that never latch -- all keyboard-only
+    # recordings -- is unchanged.  Absent means 0 on restore.
+    if getattr(dos, "mouse_press_latch", 0):
+        state["mouse_press_latch"] = dos.mouse_press_latch
+    return state
 
 
 def _restore_dos_state(rt, dos_meta: dict):
@@ -199,6 +205,7 @@ def _restore_dos_state(rt, dos_meta: dict):
                  "mouse_y", "mouse_buttons", "strict_ports"):
         if name in dos_meta:
             setattr(rt.dos, name, dos_meta[name])
+    rt.dos.mouse_press_latch = int(dos_meta.get("mouse_press_latch", 0))
     if "mouse_range" in dos_meta:
         rt.dos.mouse_range = list(map(int, dos_meta["mouse_range"]))
     if "unmodeled_port_reads" in dos_meta:

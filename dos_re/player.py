@@ -1324,6 +1324,10 @@ def run_view(frontend: GameFrontend, rt, args,
     # Only used by mouse-driven games; a no-op when the runtime has no such API.
     _set_mouse = getattr(rt.dos, "set_mouse_norm", None)
     mouse_btn = [0]  # Microsoft mask: bit0=left, bit1=right, bit2=middle
+    # Buttons pressed since the last per-frame recording sample: a click that
+    # is pressed and released between two frame boundaries is still recorded
+    # as down for one sample (the INT 33h latch then holds it for the program).
+    mouse_pressed = [0]
     mouse_norm = [None]  # latest host (u, v); None until the mouse first moves/clicks
 
     def feed_mouse(pos) -> None:
@@ -1364,7 +1368,9 @@ def run_view(frontend: GameFrontend, rt, args,
         if rec is None or not rec.active or _set_mouse is None or mouse_norm[0] is None:
             return
         u, v = mouse_norm[0]
-        _set_mouse(*rec.record_mouse(boundary=frame_box["n"], u=u, v=v, buttons=mouse_btn[0]))
+        buttons = mouse_btn[0] | mouse_pressed[0]
+        mouse_pressed[0] = 0
+        _set_mouse(*rec.record_mouse(boundary=frame_box["n"], u=u, v=v, buttons=buttons))
 
     def screenshot() -> None:
         rgb = last_rgb[0]
@@ -1478,6 +1484,7 @@ def run_view(frontend: GameFrontend, rt, args,
                     if bit is not None:
                         if event.type == pygame.MOUSEBUTTONDOWN:
                             mouse_btn[0] |= bit
+                            mouse_pressed[0] |= bit
                         else:
                             mouse_btn[0] &= ~bit
                     feed_mouse(event.pos)
