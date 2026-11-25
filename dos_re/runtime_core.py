@@ -177,6 +177,36 @@ from .keyboard import BIOS_INT9_ENTRY  # noqa: E402  (re-export)
 _BIOS_INT9_LINEAR = 0xFE987
 
 
+#: Entry the mouse driver's INT 33h vector points to while a mouse is present
+#: (``install_mouse_driver_vector``).  ``int 33h / iret``: a program that
+#: chains or far-calls the vector reaches the hosted INT 33h service.
+MOUSE_DRIVER_ENTRY = (0xF000, 0xFF58)
+_MOUSE_DRIVER_LINEAR = 0xFFF58
+
+
+def install_mouse_driver_vector(memory) -> bool:
+    """Make IVT[33h] look like an installed mouse driver.
+
+    Real-mode programs commonly test for a driver before issuing INT 33h:
+    the vector must be non-null and its first byte must not be IRET (CFh) --
+    e.g. War in Middle Earth (1010:092A: ``mov ax,es:[00CE] / jz none /
+    les bx -> mov al,es:[bx] / cmp al,CFh / jz none``).  The power-on
+    environment leaves the vector null, so such a program never sees the
+    hosted mouse.  Installing the vector changes startup control flow, so the
+    caller decides (the live viewer, when it reports a mouse present).
+    Returns False when the program already owns a non-null vector.
+    """
+    data = memory.data
+    base = 0x33 * 4
+    if data[base:base + 4] != b"\x00\x00\x00\x00":
+        return False
+    data[_MOUSE_DRIVER_LINEAR:_MOUSE_DRIVER_LINEAR + 3] = b"\xCD\x33\xCF"   # int 33h / iret
+    seg, off = MOUSE_DRIVER_ENTRY
+    data[base], data[base + 1] = off & 0xFF, (off >> 8) & 0xFF
+    data[base + 2], data[base + 3] = seg & 0xFF, (seg >> 8) & 0xFF
+    return True
+
+
 def _init_bios_environment(memory) -> None:
     data = memory.data
     data[_BIOS_IRET_STUB] = 0xCF  # IRET (written directly; F000 is ROM-protected via wb/ww)

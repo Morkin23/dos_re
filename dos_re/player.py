@@ -1239,6 +1239,13 @@ def run_view(frontend: GameFrontend, rt, args,
     # Mouse present when playing live; when replaying, only if the replay carries
     # mouse input (a keyboard-only replay must reproduce with the mouse absent).
     rt.dos.mouse_present = playback.mouse_present_hint if replaying else True
+    if not replaying and getattr(rt, "cpu", None) is not None:
+        # A live mouse must also be detectable by programs that test IVT[33h]
+        # before calling the driver.  Done before any recording starts, so the
+        # vector is part of the recorded base state; replays restore it from
+        # their own memory (older recordings keep their null vector).
+        from dos_re.runtime_core import install_mouse_driver_vector
+        install_mouse_driver_vector(rt.cpu.mem)
 
     pygame.init()
     first = np.asarray(
