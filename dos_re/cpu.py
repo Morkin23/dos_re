@@ -670,13 +670,19 @@ class CPU8086:
         behind on entry (live frames only: a replay driver rejects any count
         past its point).  Anything else would hand the interpreter an
         internal instruction of a replaced function (an undeclared fallback)
-        or stop before the boundary the oracle stops at.
+        or stop before the boundary the oracle stops at.  Hooks that no plan
+        implementation owns (framework/BIOS stubs, e.g. an interrupt return
+        into the parked point) are not checked.
         """
         where = (self.s.cs & 0xFFFF, self.s.ip & 0xFFFF)
         owner = self.hook_resume_owner.get(where)
         if owner is None:
             return
         caller = self.hook_owner.get(hook_key)
+        if caller is None:
+            # Not a plan implementation: a framework/BIOS stub such as the
+            # default INT 08h handler whose IRET returns to the parked point.
+            return
         if caller != owner:
             raise HookParkError(
                 f"hook at {hook_key[0]:04X}:{hook_key[1]:04X} ({caller!r}) stopped at "

@@ -174,7 +174,9 @@ its declared continuation, or stops at the deadline with CS:IP on one of its
 own resume points and the complete machine state the original has at that
 instruction count. The CPU validates every stop at a resume point
 (`HookParkError`: not the owner, no deadline, before the deadline); a replay
-driver additionally rejects any count past its point. The interrupt is then
+driver additionally rejects any count past its point. Hooks no plan
+implementation owns -- framework or BIOS stubs such as a default interrupt
+handler whose IRET returns into the parked point -- are not checked. The interrupt is then
 delivered exactly as for the original and returns to the resume point, where
 the hook continues.
 

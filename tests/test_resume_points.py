@@ -310,3 +310,16 @@ def test_run_frame_steps_is_plain_run_without_resume_points():
     rt = _machine()
     assert run_frame_steps(rt.cpu, 25) == 25
     assert rt.cpu.instruction_deadline is None
+
+
+def test_unowned_stub_may_return_to_a_parked_resume_point():
+    """A framework/BIOS stub (no plan owner) such as the default INT 08h
+    handler's IRET legitimately returns into the parked point."""
+    def iret_stub(cpu):
+        cpu.s.cs, cpu.s.ip = WAIT_CS, 0x000C
+    iret_stub.owns_time = True
+    rt = _bound_machine()
+    rt.cpu.replacement_hooks[(0xF000, 0xFF53)] = iret_stub
+    rt.cpu.s.cs, rt.cpu.s.ip = 0xF000, 0xFF53
+    rt.cpu.step()
+    assert (rt.cpu.s.cs, rt.cpu.s.ip) == (WAIT_CS, 0x000C) and rt.cpu.parked is False
