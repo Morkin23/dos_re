@@ -202,6 +202,14 @@ class CPU8086:
     # Optional generic execution telemetry sink. The CPU emits only raw events;
     # game-specific identity classification lives outside the interpreter.
     coverage_telemetry: Any | None = None
+    # Observation seam (the real-mode mirror of CPU386.entry_probes):
+    # {(cs, ip): callable(cpu)} fired BEFORE the instruction (or hook) at that
+    # address executes.  Unlike a replacement hook it never replaces
+    # execution, never counts an instruction and never re-enters the IRQ poll,
+    # so an observed run is byte-identical to an unobserved one.  Replay
+    # execution evidence (dos_re.rm_replay_evidence) hangs here; None keeps
+    # the per-step cost to one attribute test.
+    entry_probes: "dict[tuple[int, int], Callable[[CPU8086], None]] | None" = None
     # Waiting across a replay/frame boundary (docs/hooks_and_verification.md,
     # "Waiting across a boundary").  The frame driver publishes the guest
     # instruction count at which the current frame/point ends; a selected
@@ -563,6 +571,11 @@ class CPU8086:
                 return
 
         start_cs, start_ip = s.cs & 0xFFFF, s.ip & 0xFFFF
+        probes = self.entry_probes
+        if probes is not None:
+            probe = probes.get((start_cs, start_ip))
+            if probe is not None:
+                probe(self)
         hooks = self.replacement_hooks
         # Only pay the (cs, ip) tuple alloc + dict probe when hooks exist.
         if hooks and (start_cs, start_ip) in hooks:

@@ -66,6 +66,21 @@ Consecutive visits are not assumed to be edges. Observers report actual
 transfers. An observed indirect target extends the graph but does not prove the
 site complete.
 
+Producers. Protected-mode programs use `dos_re.pm_replay_evidence`
+(`CPU386.entry_probes`, `PMFunctionObserver`, `observe_pm_replay`). Real-mode
+programs use `dos_re.rm_replay_evidence`: `CPU8086.entry_probes` is the same
+non-perturbing seam (probes never replace execution, count instructions, or
+re-poll IRQs), `RMFunctionObserver` records visits, `call` transfers and
+`interrupt` transfers into guest interrupt handlers, and
+`observe_real_mode_replay` persists them on an oracle pass driven by the
+frontend's own replay driver (`GameFrontend.observation_driver`, which
+defaults to the oracle of `verification_drivers`). Programs without Recovery IR
+first run `discover_real_mode_call_targets`, a coverage-telemetry pass that
+collects executed CALL targets and guest interrupt handlers inside the program
+range; targets outside it (BIOS and framework stubs) are only counted. An
+`end` before the artifact end observes a validated prefix and is recorded in
+the evidence provenance as `observed_end`.
+
 ### Recovery IR
 
 IR ingestion adds decoded functions, blocks, direct transfers, platform

@@ -524,6 +524,23 @@ class GameFrontend:
             f"{type(self).__name__} does not provide differential replay drivers"
         )
 
+    def observation_driver(
+        self,
+        args: argparse.Namespace,
+        plan: ExecutionPlan,
+        artifact: ReplayArtifact,
+    ) -> ReplayDriver:
+        """Oracle ReplayDriver for a replay execution-evidence pass.
+
+        Used by :mod:`dos_re.rm_replay_evidence` (function discovery and
+        observation); the driver must expose its restored runtime as
+        ``driver.runtime``.  The default takes the oracle of
+        :meth:`verification_drivers`; a frontend whose verification drivers
+        need a candidate selection overrides this.
+        """
+        oracle, _candidate = self.verification_drivers(args, plan, artifact)
+        return oracle
+
     def bind_execution_plan(self, runtime, plan: ExecutionPlan, *,
                             carrier_id: str = "interpreted-cpu") -> None:
         """Install selected providers through declared carrier adapters."""
